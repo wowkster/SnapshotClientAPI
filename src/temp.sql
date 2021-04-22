@@ -1,0 +1,1 @@
+DELETE FROM ClientIds WHERE id=1

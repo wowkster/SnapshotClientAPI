@@ -1,0 +1,22 @@
+GET http://localhost:8080/api/users/4604daeb-b359-4471-964c-e6acdf8af1d0/data
+Client-Id: OVVKLV6TgK78MO5ISfkEOrBN
+SHA1-Hash-Security: 4626088b8375cd099fe8206164eaa49781c671f6
+
+###
+
+POST http://localhost:8080/api/create-key
+Content-Type: application/json
+
+{
+    "uuid" : "4604daeb-b359-4471-964c-e6acdf8af1d0",
+    "username" : "adyowowk@gmail.com",
+    "password" : "Orchidgem-213" 
+}
+
+###
+PATCH http://localhost:8080/api/users/4604daeb-b359-4471-964c-e6acdf8af1d0/online
+Content-Type: application/json
+
+{
+    "online" : true
+}
