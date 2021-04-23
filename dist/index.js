@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import fs from "fs";
 import axios from "axios";
+import bcrypt from "bcrypt";
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -20,6 +21,7 @@ const keyRateLimit = rateLimit({
 });
 app.use('/api/users/*', usersSpeedLimiter);
 app.use('/api/create-key', keyRateLimit);
+app.use('/api/register', keyRateLimit);
 app.use(express.json());
 // Secure method to ensure only a registered client can access the api
 app.use('/api/users/*', async (req, res, next) => {
@@ -31,11 +33,14 @@ app.use('/api/users/*', async (req, res, next) => {
     }
     const clientSecret = await getClientSecret(clientId);
     if (clientSecret === undefined) {
-        res.status(400).send("Bad Request - Client Id is invalid or does not exist");
+        res.status(400).send({
+            message: "CLIENT_ID_INVALID",
+            errors: ["Client ID is invalid or does not exist."]
+        });
         return;
     }
     const uriSlug = req.url.split('?')[0];
-    const data = req.method + uriSlug + clientSecret + '😎';
+    const data = req.method + uriSlug + clientSecret + '😎' + process.env.STATIC_SECRET + process.env.CLIENT_SECRET;
     const hashedData = sha1(data);
     console.log(hashedData);
     if (hash !== hashedData) {
@@ -64,10 +69,13 @@ catch (err) {
 app.get('/api/users/:uuid/data', async (req, res) => {
     const { uuid } = req.params;
     if (!uuidIsValid(uuid)) {
-        res.status(400).send("Bad Request - UUID is invalid");
+        res.status(400).send({
+            message: "UUID_INVALID",
+            errors: ["UUID is not compliant with standard UUID v4 formatting. Dashes are expcted."]
+        });
         return;
     }
-    const user = await getRegisteredUser(uuid);
+    const user = await getRegisteredUserFromUUID(uuid);
     if (user === undefined) {
         // MySQL threw an error
         res.status(500).send("Internal Database Error - Please notify a developer");
@@ -84,7 +92,7 @@ app.get('/api/users/:uuid/data', async (req, res) => {
         "cape": user.cape,
         "online": online
     });
-    fs.writeFile(`capes/${uuid.replace('-', '')}.png`, Buffer.from(user.cape, 'base64'), (err) => {
+    fs.writeFile(`capes/${uuid}.png`, Buffer.from(user.cape, 'base64'), (err) => {
         if (err) {
             throw err;
         }
@@ -94,14 +102,20 @@ app.patch('/api/users/:uuid/online', async (req, res) => {
     const { uuid } = req.params;
     const { online } = req.body;
     if (!uuidIsValid(uuid)) {
-        res.status(400).send("Bad Request - UUID is invalid");
+        res.status(400).send({
+            message: "UUID_INVALID",
+            errors: ["UUID is not compliant with standard UUID v4 formatting. Dashes are expcted."]
+        });
         return;
     }
     if (online === undefined) {
-        res.status(400).send(`Bad Request - Missing "online" property`);
+        res.status(400).send({
+            message: "ONILNE_UNDEFINED",
+            errors: ["Request must contain an \"online\" atribute."]
+        });
         return;
     }
-    const user = await getRegisteredUser(uuid);
+    const user = await getRegisteredUserFromUUID(uuid);
     if (user === undefined) {
         // MySQL threw an error
         res.status(500).send("Internal Database Error - Please notify a developer");
@@ -118,8 +132,16 @@ app.patch('/api/users/:uuid/online', async (req, res) => {
     res.status(202).send("Updating User Status");
 });
 app.post('/api/create-key', async (req, res) => {
-    if ((await getRegisteredUser(req.body.uuid)) === null) {
-        res.status(404).send("UUID is not registered. Please register an Unname Client account first.");
+    const uuidBody = req.body.uuid;
+    if (!uuidIsValid(uuidBody)) {
+        res.status(400).send({
+            message: "UUID_INVALID",
+            errors: ["UUID is not compliant with standard UUID v4 formatting. Dashes are expcted."]
+        });
+        return;
+    }
+    if ((await getRegisteredUserFromUUID(uuidBody)) === null) {
+        res.status(404).send("UUID is not registered. Please register an Unnamed Client account first.");
     }
     const clientId = await makeClientId(true);
     const { username } = req.body;
@@ -142,7 +164,7 @@ app.post('/api/create-key', async (req, res) => {
         return;
     }
     const uuid = formatUUID(authResult.data.selectedProfile.id);
-    const user = await getRegisteredUser(uuid);
+    const user = await getRegisteredUserFromUUID(uuid);
     if (user === null) {
         // TODO - Register user if not registered
         res.status(404).send("Must register an Unnamed Client account");
@@ -169,19 +191,113 @@ app.post('/api/create-key', async (req, res) => {
         "clientSecret": secret
     });
 });
-app.post('/api/regen-key', (req, res) => {
-    res.status(200);
+app.post('/api/register', async (req, res) => {
+    const { username } = req.body;
+    const { email } = req.body;
+    const { password } = req.body;
+    const { passwordRepeated } = req.body;
+    const { uuid } = req.body;
+    const validated = validateInput({ username, email, password, passwordRepeated, uuid });
+    if (!validated.valid) {
+        res.status(400).send({
+            message: "INPUT_INVALID",
+            errors: validated.errors
+        });
+        return;
+    }
+    const uuidUser = await getRegisteredUserFromUUID(uuid);
+    if (uuidUser !== null) {
+        res.status(400).send({
+            message: "UUID_TAKEN",
+            errors: ["UUID is already being used"]
+        });
+        return;
+    }
+    const emailUser = await getRegisteredUserFromEmail(email);
+    if (emailUser !== null) {
+        res.status(400).send({
+            message: "EMAIL_TAKEN",
+            errors: ["Email is already being used"]
+        });
+        return;
+    }
+    const usernameUser = await getRegisteredUserFromUsername(username);
+    if (usernameUser !== null) {
+        res.status(400).send({
+            message: "USERNAME_TAKEN",
+            errors: ["Username is already being used"]
+        });
+        return;
+    }
+    if (!await registerNewUser({ uuid, email, username, password })) {
+        res.status(500).send({
+            message: "MYSQL_ERROR",
+            errors: ["An Error Occured while trying to register your account"]
+        });
+        return;
+    }
+    res.status(201).send("Registered User");
 });
 app.listen(PORT, () => {
     console.log(`server started at http://localhost:${PORT}`);
 });
-function uuidIsValid(uuid) {
-    // Check with Validate UUID formatting not against mojang servers
-    if (uuid === null || uuid === undefined) {
+// PULL USERS FROM DATABASE - ===============================================
+async function getRegisteredUserFromField(field, value) {
+    try {
+        const [results] = await con.query(`SELECT * FROM Users WHERE ${field}='${value}' LIMIT 1;`);
+        if (results.length === 0) {
+            return null;
+        }
+        const result = results[0];
+        return {
+            "id": result.id,
+            "uuid": result.uuid,
+            "cape": result.cape,
+            "online": result.isOnline,
+            "email": result.email,
+            "username": result.username
+        };
+    }
+    catch (err) {
+        console.error(err);
+        return undefined;
+    }
+}
+async function getRegisteredUserFromUUID(uuid) {
+    // Look up UUID in database and see if any rows exist
+    return await getRegisteredUserFromField('uuid', uuid);
+}
+async function getRegisteredUserFromEmail(email) {
+    // Look up Email in database and see if any rows exist
+    return await getRegisteredUserFromField('email', email);
+}
+async function getRegisteredUserFromUsername(username) {
+    // Look up Username in database and see if any rows exist
+    return await getRegisteredUserFromField('username', username);
+}
+// USER REGISTRATION - ===============================================
+async function registerNewUser(newUser) {
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newUser.password, salt);
+        await con.query(`INSERT INTO Users (uuid, email, username, password) VALUES ('${newUser.uuid}', '${newUser.email}', '${newUser.username}', '${hashedPassword}');`);
+        return true;
+    }
+    catch (err) {
+        console.error(err);
         return false;
     }
-    return (/^[A-F\d]{8}-[A-F\d]{4}-4[A-F\d]{3}-[89AB][A-F\d]{3}-[A-F\d]{12}$/i).test(uuid);
 }
+async function hashPassword(password) {
+    const salt = await bcrypt.genSalt(10);
+    const hash = await bcrypt.hash(password, salt);
+    return hash;
+}
+// USER LOGIN - ===============================================
+async function loginIsValid(loginAttempt) {
+    return true;
+}
+// USER MODIFICATION - ===============================================
 async function setUserOnline(uuid, isOnline) {
     try {
         await con.query(`UPDATE Users SET isOnline=${(isOnline ? '1' : '0')} WHERE uuid='${uuid}';`);
@@ -192,26 +308,7 @@ async function setUserOnline(uuid, isOnline) {
         return false;
     }
 }
-async function getRegisteredUser(uuid) {
-    // Look up UUID in database and see if any rows exist
-    try {
-        const [results] = await con.query(`SELECT * FROM Users WHERE uuid='${uuid}' LIMIT 1;`);
-        if (results.length === 0) {
-            return null;
-        }
-        const result = results[0];
-        return {
-            "id": result.id,
-            "uuid": result.uuid,
-            "cape": result.cape,
-            "online": result.isOnline
-        };
-    }
-    catch (err) {
-        console.error(err);
-        return undefined;
-    }
-}
+// CLIENT SECRETS - ===============================================
 async function makeClientId(checkDB) {
     const result = [];
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -238,6 +335,9 @@ async function userHasClientId(user) {
         throw err;
     }
 }
+function makeSecret(clientId) {
+    return sha1(clientId + (new Date()).getTime() + makeClientId(false));
+}
 async function insertNewClientId(user, clientId, secret) {
     try {
         await con.query(`INSERT INTO ClientIds (userId, clientIdKey, clientSecret) VALUES (${user.id}, '${clientId}', '${secret}');`);
@@ -247,12 +347,6 @@ async function insertNewClientId(user, clientId, secret) {
         console.error(err);
         return false;
     }
-}
-function makeSecret(clientId) {
-    return sha1(clientId + (new Date()).getTime() + makeClientId(false));
-}
-function formatUUID(uuid) {
-    return uuid.replace(/(\w{8})(\w{4})(\w{4})(\w{4})(\w{12})/, "$1-$2-$3-$4-$5");
 }
 async function getClientSecret(clientId) {
     var _a;
@@ -273,5 +367,53 @@ async function updateClientId(user, clientId, secret) {
         console.error(err);
         return false;
     }
+}
+// INPUT VALIDATION - ===============================================
+function formatUUID(uuid) {
+    return uuid.replace(/(\w{8})(\w{4})(\w{4})(\w{4})(\w{12})/, "$1-$2-$3-$4-$5");
+}
+function uuidIsValid(uuid) {
+    // Check with Validate UUID formatting not against mojang servers
+    if (uuid === null || uuid === undefined) {
+        return false;
+    }
+    return (/^[A-F\d]{8}-[A-F\d]{4}-4[A-F\d]{3}-[89AB][A-F\d]{3}-[A-F\d]{12}$/i).test(uuid);
+}
+function passwordIsValid(password) {
+    return (/^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$/).test(password);
+}
+function usernameIsValid(username) {
+    return (/^[a-zA-Z0-9_]{3,24}$/).test(username);
+}
+function emailIsValid(email) {
+    return (/(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?|\[(?:(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9]))\.){3}(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9])|[a-z0-9-]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\])/).test(email);
+}
+function validateInput(input) {
+    const userInput = {
+        "valid": true,
+        "errors": []
+    };
+    if (!usernameIsValid(input.username)) {
+        userInput.errors.push("Username is invalid. Must only contain alphanumeric characters and underscores.");
+    }
+    if (!emailIsValid(input.email)) {
+        userInput.errors.push("Email is invalid.");
+    }
+    if (!passwordIsValid(input.password)) {
+        userInput.errors.push("Password is invalid. Must be at least 8 characters and contain at least one uppercase letter, one lowercase letter and one number.");
+    }
+    if (!passwordIsValid(input.passwordRepeated)) {
+        userInput.errors.push("Repeated Password is invalid. Must be at least 8 characters and contain at least one uppercase letter, one lowercase letter and one number.");
+    }
+    if (!uuidIsValid(input.uuid)) {
+        userInput.errors.push("UUID is not compliant with standard UUID v4 formatting. Dashes are expcted.");
+    }
+    if (!(input.password === input.passwordRepeated)) {
+        userInput.errors.push("Passwords do not match.");
+    }
+    if (userInput.errors.length > 0) {
+        userInput.valid = false;
+    }
+    return userInput;
 }
 //# sourceMappingURL=index.js.map

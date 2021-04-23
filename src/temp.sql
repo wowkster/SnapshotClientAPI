@@ -1,1 +1,1 @@
-DELETE FROM ClientIds WHERE id=1
+SELECT password FROM Users

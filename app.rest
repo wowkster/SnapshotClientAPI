@@ -1,6 +1,6 @@
 GET http://localhost:8080/api/users/4604daeb-b359-4471-964c-e6acdf8af1d0/data
-Client-Id: OVVKLV6TgK78MO5ISfkEOrBN
-SHA1-Hash-Security: 4626088b8375cd099fe8206164eaa49781c671f6
+Client-Id: SpTrivOXp7QEYuLboGlfi7Wo
+SHA1-Hash-Security: 44e9609720703953947bc1e492135451eac0edd2
 
 ###
 
@@ -11,6 +11,18 @@ Content-Type: application/json
     "uuid" : "4604daeb-b359-4471-964c-e6acdf8af1d0",
     "username" : "adyowowk@gmail.com",
     "password" : "Orchidgem-213" 
+}
+
+###
+POST http://localhost:8080/api/register
+Content-Type: application/json
+
+{
+    "username" : "admin",
+    "email" : "adyowok@gmail.com",
+    "password" : "Password213",
+    "passwordRepeated" : "Password213",
+    "uuid" : "4604daeb-b359-4471-964c-e6acdf8af1d2"
 }
 
 ###
